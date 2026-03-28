@@ -53,7 +53,7 @@ st.sidebar.header("1. Run Control & Naming")
 run_name = st.sidebar.text_input("Run Name", "default")
 
 st.sidebar.header("2. Performance & Accuracy")
-fast_mode = st.sidebar.checkbox("Fast mode (犧牲精度換取速度)", value=True)
+fast_mode = st.sidebar.checkbox("Fast mode (Reduced accuracy for speed)", value=True)
 parallel_backend = st.sidebar.selectbox("Parallel processing library", ["joblib", "dask"])
 
 st.sidebar.header("3. Advanced Model Parameters")
@@ -81,7 +81,12 @@ CONFIG = {
 }
 np.random.seed(CONFIG['RNG_SEED'])
 
-# --- SECTION 3: THE MethAIne LIBRARY ---
+# --- SECTION 3: HELPER FUNCTIONS ---
+
+def hex_to_rgba(hex_color, opacity):
+    hex_color = hex_color.lstrip('#')
+    rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    return f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {opacity})'
 
 def get_run_config(config_dict):
     if config_dict["FAST_MODE"]:
@@ -116,8 +121,7 @@ def preprocess_city(path_or_buffer, city_name=None, seasons=["D-J-F","J-J-A"]):
     return tt
 
 def generate_data_quality_report_st(all_city_data):
-    report = []
-    report.append("### --- DATA QUALITY REPORT ---")
+    report = ["### --- DATA QUALITY REPORT ---"]
     for city_df in all_city_data:
         city_name = str(city_df['CITY'].iloc[0])
         report.append(f"**Analysis for: {city_name}**")
@@ -325,7 +329,6 @@ def run_projection_for_city(city_df, run_config):
         f_mean, f_ci = kde_fuse_slopes(f_pool)
         ens_mean = np.nanmean(b_preds, axis=0)
         
-        # Hist Slopes
         m_mask = (yrs >= CONFIG['MODERN_START'])
         modern_slope = np.polyfit(yrs[m_mask], tps[m_mask], 1)[0] * 10.0 if m_mask.sum() > 2 else np.nan
         
@@ -352,9 +355,14 @@ def generate_interactive_plot(all_results, eid):
         p, s = d["plot_data"], d["summary"]
         c_idx = unique_cities.index(s['CITY']) % 2
         base_clr = sc[s['SEASON']][c_idx]
+        
+        # Proper hex to rgba conversion
+        fill_clr = hex_to_rgba(base_clr, 0.15)
+        
         fig.add_trace(go.Scatter(x=p['years_full'], y=p['temps_full'], mode='markers', marker=dict(color=base_clr, opacity=0.4), name=f"{s['CITY']} {s['SEASON']} Obs"))
         fig.add_trace(go.Scatter(x=p['future_years'], y=p['ens_mean'], mode='lines', line=dict(color=base_clr, width=3, dash='dash'), name=f"{s['CITY']} {s['SEASON']} Proj"))
-        fig.add_trace(go.Scatter(x=np.concatenate([p['future_years'], p['future_years'][::-1]]), y=np.concatenate([p['ci_upper'], p['ci_lower'][::-1]]), fill='toself', fillcolor=base_clr.replace('#','rgba(').replace(')','0.15)'), line=dict(color='rgba(255,255,255,0)'), showlegend=False))
+        fig.add_trace(go.Scatter(x=np.concatenate([p['future_years'], p['future_years'][::-1]]), y=np.concatenate([p['ci_upper'], p['ci_lower'][::-1]]), fill='toself', fillcolor=fill_clr, line=dict(color='rgba(255,255,255,0)'), showlegend=False))
+        
     fig.update_layout(title=f"MethAIne 3.1 Projections - ID: {eid}", template="plotly_white", hovermode="x unified")
     return fig
 
@@ -389,25 +397,21 @@ def generate_pdf_report(all_results, eid):
 # --- SECTION 5: MAIN APP EXECUTION ---
 
 def main():
-    # File Uploader
-    uploaded_files = st.file_uploader("Upload CSV Files (GISTEMP/NASA GHCN v4 cleaned)", type="csv", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload CSV Files", type="csv", accept_multiple_files=True)
     
-    if st.button("🚀 Run MethAIne Analysis"):
-        with st.spinner("Processing climate models..."):
+    if st.button("🚀 Run Analysis"):
+        with st.spinner("Processing..."):
             eid = str(uuid.uuid4())
             
-            # Data Ingestion
             if uploaded_files:
                 all_city_data = [preprocess_city(f) for f in uploaded_files]
             else:
-                st.info("No files uploaded. Running demonstration with demo data.")
+                st.info("Running demo...")
                 buf, name = get_embedded_sample_data()
                 all_city_data = [preprocess_city(buf, city_name=name)]
             
-            # Data Quality Report
             st.markdown(generate_data_quality_report_st(all_city_data))
             
-            # Run Engine
             run_config = get_run_config(CONFIG)
             all_results = []
             for city_df in all_city_data:
@@ -415,27 +419,23 @@ def main():
                 for s, d in res.items(): all_results.append(d)
             
             if not all_results:
-                st.error("No valid data to process.")
+                st.error("No results generated.")
                 return
 
-            # Display Visuals
             st.plotly_chart(generate_interactive_plot(all_results, eid), use_container_width=True)
             
             col1, col2 = st.columns(2)
             with col1:
                 st.pyplot(generate_static_plot(all_results, eid))
             with col2:
-                # Summary Table
                 summary_df = pd.DataFrame([r['summary'] for r in all_results])
                 st.dataframe(summary_df)
 
-            # Downloads
-            csv = summary_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Results CSV", csv, f"{run_name}_projections.csv", "text/csv")
+            st.download_button("Download CSV", summary_df.to_csv(index=False), f"{run_name}_out.csv", "text/csv")
             
             pdf_path = generate_pdf_report(all_results, eid)
             with open(pdf_path, "rb") as f:
-                st.download_button("📥 Download PDF Report", f, f"{run_name}_report.pdf", "application/pdf")
+                st.download_button("Download PDF", f, "report.pdf", "application/pdf")
 
 if __name__ == "__main__":
     main()
