@@ -2,10 +2,12 @@ streamlit
 pandas
 numpy
 plotly
-prophet==1.2.1
-arch
+joblib
+matplotlib
+reportlab
 scikit-learn
 statsmodels
-reportlab
+arch
+prophet==1.2.1
 emcee
-joblib
+scipy
