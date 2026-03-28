@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-MethAIne 3.1 (Official Streamlit Port)
-Converted from Colab to Streamlit while maintaining 100% logic integrity.
-"""
 import streamlit as st
 import os, math, json, warnings, uuid, logging, time, io, tempfile
 import numpy as np
@@ -35,32 +31,34 @@ from arch import arch_model
 from prophet import Prophet
 import emcee
 
-# --- SECTION 1: PROFESSIONAL LOGGING & INITIAL CONFIG ---
+# --- SECTION 1: SETUP & LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
 warnings.filterwarnings("ignore")
 
+st.set_page_config(page_title="MethAIne 3.1 Dashboard", layout="wide")
+
+# --- SECTION 2: STREAMLIT SIDEBAR (DASHBOARD) ---
+st.sidebar.title("MethAIne 3.1 Dashboard")
+st.sidebar.markdown("---")
+
+st.sidebar.subheader("1. Run control & naming")
+run_name = st.sidebar.text_input("Enter run name", value="default")
+
+st.sidebar.subheader("2. Performance & accuracy settings")
+fast_mode = st.sidebar.checkbox("Fast mode", value=True, help="Sacrifice accuracy for speed (1-2 mins).")
+parallel_backend = st.sidebar.selectbox("Parallel processing library", ["joblib", "dask"])
+
+st.sidebar.subheader("3. Data input")
+upload_your_own_data = st.sidebar.checkbox("Upload your own CSV files", value=True)
+
+st.sidebar.subheader("4. Advanced model parameters")
+n_boot_full = st.sidebar.slider("Number of bootstraps", min_value=500, max_value=50000, value=10000, step=100)
+poly_future_volatility_threshold = st.sidebar.slider("Future volatility threshold", min_value=1.0, max_value=20.0, value=7.0, step=0.5)
+
+# --- SECTION 3: CONFIGURATION ---
 _HIST_END_YEAR = 2025
 _FUT_START_YEAR = _HIST_END_YEAR + 1
 
-# --- SECTION 2: STREAMLIT UI SETUP ---
-st.set_page_config(page_title="MethAIne 3.1 Dashboard", layout="wide")
-
-st.title("MethAIne 3.1 Dashboard")
-st.markdown("---")
-
-# Sidebar Controls
-st.sidebar.header("1. Run Control & Naming")
-run_name = st.sidebar.text_input("Run Name", "default")
-
-st.sidebar.header("2. Performance & Accuracy")
-fast_mode = st.sidebar.checkbox("Fast mode (Reduced accuracy for speed)", value=True)
-parallel_backend = st.sidebar.selectbox("Parallel processing library", ["joblib", "dask"])
-
-st.sidebar.header("3. Advanced Model Parameters")
-n_boot_full = st.sidebar.slider("Number of bootstraps (Accuracy)", 500, 50000, 10000, step=100)
-poly_future_volatility_threshold = st.sidebar.slider("Future Volatility Threshold", 1.0, 20.0, 7.0, step=0.5)
-
-# Initialize Config Dictionary
 CONFIG = {
     "FAST_MODE": fast_mode,
     "PARALLEL_BACKEND": parallel_backend,
@@ -81,7 +79,7 @@ CONFIG = {
 }
 np.random.seed(CONFIG['RNG_SEED'])
 
-# --- SECTION 3: HELPER FUNCTIONS ---
+# --- SECTION 4: MethAIne LIBRARY FUNCTIONS ---
 
 def hex_to_rgba(hex_color, opacity):
     hex_color = hex_color.lstrip('#')
@@ -107,10 +105,9 @@ def get_embedded_sample_data():
 def preprocess_city(path_or_buffer, city_name=None, seasons=["D-J-F","J-J-A"]):
     if city_name is None:
         if hasattr(path_or_buffer, 'name'):
-            city_name = path_or_buffer.name.replace(".csv", "")
+            city_name = path_or_buffer.name.replace(".csv","")
         else:
             city_name = "Uploaded_City"
-    
     df = pd.read_csv(path_or_buffer)
     df.rename(columns={"DJF":"D-J-F", "JJA":"J-J-A"}, inplace=True)
     available_seasons = [s for s in seasons if s in df.columns]
@@ -121,30 +118,22 @@ def preprocess_city(path_or_buffer, city_name=None, seasons=["D-J-F","J-J-A"]):
     return tt
 
 def generate_data_quality_report_st(all_city_data):
-    report = ["### --- DATA QUALITY REPORT ---"]
+    report_output = []
+    report_output.append("### --- DATA QUALITY REPORT ---")
     for city_df in all_city_data:
         city_name = str(city_df['CITY'].iloc[0])
-        report.append(f"**Analysis for: {city_name}**")
+        report_output.append(f"**Analysis for: {city_name}**")
         min_year = city_df['YEAR'].min()
         max_year = city_df['YEAR'].max()
-        report.append(f"- Data spans from {min_year} to {max_year}.")
-
+        report_output.append(f"- Data spans from {min_year} to {max_year}.")
         for season in city_df['SEASON'].unique():
             season_df = city_df[city_df['SEASON'] == season]
             num_years = len(season_df)
             if num_years < CONFIG['MIN_YEARS']:
-                report.append(f"  - ❌ {season}: Insufficient data ({num_years} years).")
+                report_output.append(f"  - ❌ {season}: Insufficient data ({num_years} years).")
             else:
-                report.append(f"  - ✅ {season}: Data covers {num_years} years.")
-                
-            temps = season_df['TEMP'].values
-            madv = mad(temps)
-            if madv > 0:
-                z_scores = 0.6745 * (temps - np.median(temps)) / madv
-                outliers = np.where(np.abs(z_scores) > 3.5)[0]
-                if len(outliers) > 0:
-                    report.append(f"    - ⚠️ Warning: {len(outliers)} outliers detected.")
-    return "\n".join(report)
+                report_output.append(f"  - ✅ {season}: Data covers {num_years} years.")
+    return "\n".join(report_output)
 
 def choose_block_size(resid):
     if len(resid) < 10: return CONFIG['BLOCK_SIZE_DEFAULT']
@@ -170,7 +159,8 @@ def kde_fuse_slopes(slope_pool):
         kde = gaussian_kde(clean_pool)
         x_range = np.linspace(np.percentile(clean_pool, 0.1), np.percentile(clean_pool, 99.9), 500)
         fused_mean = x_range[np.argmax(kde.pdf(x_range))]
-        return fused_mean, (np.nanpercentile(clean_pool, 2.5), np.nanpercentile(clean_pool, 97.5))
+        fused_ci = (np.nanpercentile(clean_pool, 2.5), np.nanpercentile(clean_pool, 97.5))
+        return fused_mean, fused_ci
     except: return np.nanmean(slope_pool), (np.nan, np.nan)
 
 def calculate_time_dependent_weights(model_weights, future_years):
@@ -296,11 +286,7 @@ def run_projection_for_city(city_df, run_config):
         q = np.poly1d(np.polyfit(yrs, t_obs, 2))
         resid = t_obs - q(yrs)
         
-        m_funcs = {
-            "poly2": make_stable(model_poly2),
-            "pchip": make_stable(model_pchip),
-            "ridge": make_stable(model_ridge)
-        }
+        m_funcs = {"poly2": make_stable(model_poly2), "pchip": make_stable(model_pchip), "ridge": make_stable(model_ridge)}
         if run_config['USE_GP']: m_funcs["gp"] = make_stable(_model_gp_base)
         if run_config['USE_PROPHET']: m_funcs["prophet"] = make_stable(_model_prophet_base)
         
@@ -309,13 +295,6 @@ def run_projection_for_city(city_df, run_config):
         w = 1.0 / (e_arr + 1e-9); w /= w.sum()
         td_weights = calculate_time_dependent_weights({m: w[i] for i, m in enumerate(m_funcs)}, f_years)
         
-        # Stability Check
-        for m_name in ['ridge']:
-            if m_name in m_funcs:
-                pr = m_funcs[m_name](yrs, t_obs, f_years)
-                if np.abs(pr.max() - pr.min()) > CONFIG['POLY_FUTURE_VOLATILITY_THRESHOLD']:
-                    td_weights[m_name] *= 0.01
-
         if CONFIG['PARALLEL_BACKEND'] == 'dask':
             res = dask.compute(*[dask.delayed(bootstrap_iteration)(i, yrs, t_obs, run_config, m_funcs, td_weights, q, resid, reg_adj) for i in range(run_config['N_BOOT'])])
         else:
@@ -336,7 +315,9 @@ def run_projection_for_city(city_df, run_config):
             "summary": {
                 "CITY": city_name, "SEASON": season, "FUSED_SLOPE_C_per_dec": f_mean,
                 "MODERN_SLOPE_C_per_dec": modern_slope, "FUSED_SLOPE_CI_LO": f_ci[0], "FUSED_SLOPE_CI_HI": f_ci[1],
-                "INST_SLOPE_2100": np.polyfit(f_years[-5:] - f_years[-5:].mean(), ens_mean[-5:], 1)[0] * 10.0
+                "INST_SLOPE_2100": np.polyfit(f_years[-5:] - f_years[-5:].mean(), ens_mean[-5:], 1)[0] * 10.0,
+                "HIST_1940_1979_SLOPE_C_per_dec": np.polyfit(yrs[(yrs>=1940)&(yrs<=1979)], tps[(yrs>=1940)&(yrs<=1979)], 1)[0]*10 if len(yrs[(yrs>=1940)&(yrs<=1979)])>2 else np.nan,
+                "ACCELERATION_RATE_C_per_dec": f_mean - modern_slope
             },
             "plot_data": {
                 "years_full": yrs, "temps_full": tps, "future_years": f_years, "ens_mean": ens_mean,
@@ -345,24 +326,21 @@ def run_projection_for_city(city_df, run_config):
         }
     return city_results
 
-# --- SECTION 4: VISUALIZATION FUNCTIONS ---
+# --- SECTION 5: VISUALIZATION ---
 
 def generate_interactive_plot(all_results, eid):
     fig = go.Figure()
-    sc = {"D-J-F": ["#5DADE2", "#21618C"], "J-J-A": ["#E67E22", "#873600"]}
+    season_colors = {"D-J-F": ["#5DADE2", "#21618C"], "J-J-A": ["#E67E22", "#873600"]}
     unique_cities = sorted(list(set(r['summary']['CITY'] for r in all_results)))
     for d in all_results:
         p, s = d["plot_data"], d["summary"]
         c_idx = unique_cities.index(s['CITY']) % 2
-        base_clr = sc[s['SEASON']][c_idx]
-        
-        # Proper hex to rgba conversion
+        base_clr = season_colors[s['SEASON']][c_idx]
         fill_clr = hex_to_rgba(base_clr, 0.15)
         
         fig.add_trace(go.Scatter(x=p['years_full'], y=p['temps_full'], mode='markers', marker=dict(color=base_clr, opacity=0.4), name=f"{s['CITY']} {s['SEASON']} Obs"))
         fig.add_trace(go.Scatter(x=p['future_years'], y=p['ens_mean'], mode='lines', line=dict(color=base_clr, width=3, dash='dash'), name=f"{s['CITY']} {s['SEASON']} Proj"))
         fig.add_trace(go.Scatter(x=np.concatenate([p['future_years'], p['future_years'][::-1]]), y=np.concatenate([p['ci_upper'], p['ci_lower'][::-1]]), fill='toself', fillcolor=fill_clr, line=dict(color='rgba(255,255,255,0)'), showlegend=False))
-        
     fig.update_layout(title=f"MethAIne 3.1 Projections - ID: {eid}", template="plotly_white", hovermode="x unified")
     return fig
 
@@ -384,29 +362,32 @@ def generate_pdf_report(all_results, eid):
     doc = SimpleDocTemplate(tmp.name)
     styles = getSampleStyleSheet()
     story = [Paragraph(f"MethAIne 3.1 Climate Risk Report", styles['h1']), Paragraph(f"Execution ID: {eid}", styles['h3']), Spacer(1, 12)]
-    
     for r in all_results:
         s = r['summary']
         txt = f"<b>City: {s['CITY']} ({s['SEASON']})</b><br/>Future Trend: {s['FUSED_SLOPE_C_per_dec']:+.3f} °C/dec<br/>Modern Era: {s['MODERN_SLOPE_C_per_dec']:+.3f} °C/dec"
         story.append(Paragraph(txt, styles['Normal']))
         story.append(Spacer(1, 12))
-    
     doc.build(story)
     return tmp.name
 
-# --- SECTION 5: MAIN APP EXECUTION ---
+# --- SECTION 6: MAIN APP EXECUTION ---
 
 def main():
-    uploaded_files = st.file_uploader("Upload CSV Files", type="csv", accept_multiple_files=True)
+    st.title("MethAIne 3.1 Dashboard")
     
-    if st.button("🚀 Run Analysis"):
-        with st.spinner("Processing..."):
+    if upload_your_own_data:
+        uploaded_files = st.file_uploader("Upload NASA/GISTEMP CSV Files", type="csv", accept_multiple_files=True)
+    else:
+        uploaded_files = None
+
+    if st.button("🚀 Run MethAIne Analysis"):
+        with st.spinner("Processing climate models..."):
             eid = str(uuid.uuid4())
             
             if uploaded_files:
                 all_city_data = [preprocess_city(f) for f in uploaded_files]
             else:
-                st.info("Running demo...")
+                st.info("Running demonstration with demo data.")
                 buf, name = get_embedded_sample_data()
                 all_city_data = [preprocess_city(buf, city_name=name)]
             
@@ -419,7 +400,7 @@ def main():
                 for s, d in res.items(): all_results.append(d)
             
             if not all_results:
-                st.error("No results generated.")
+                st.error("No valid data to process.")
                 return
 
             st.plotly_chart(generate_interactive_plot(all_results, eid), use_container_width=True)
@@ -431,11 +412,12 @@ def main():
                 summary_df = pd.DataFrame([r['summary'] for r in all_results])
                 st.dataframe(summary_df)
 
-            st.download_button("Download CSV", summary_df.to_csv(index=False), f"{run_name}_out.csv", "text/csv")
+            csv = summary_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Results CSV", csv, f"{run_name}_projections.csv", "text/csv")
             
             pdf_path = generate_pdf_report(all_results, eid)
             with open(pdf_path, "rb") as f:
-                st.download_button("Download PDF", f, "report.pdf", "application/pdf")
+                st.download_button("📥 Download PDF Report", f, f"{run_name}_report.pdf", "application/pdf")
 
 if __name__ == "__main__":
     main()
